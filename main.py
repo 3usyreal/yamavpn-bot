@@ -9,7 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, ErrorEvent, LabeledPrice, Message, PreCheckoutQuery
+from aiogram.types import CallbackQuery, ErrorEvent, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import config
@@ -118,8 +118,8 @@ async def fulfill(bot: Bot, tg_id: int, plan: str):
             log.exception("referral bonus failed")
 
 
-async def settle_crypto(bot: Bot, invoice_id):
-    row = await db.claim_pending(str(invoice_id))
+async def settle(bot: Bot, ext_id):
+    row = await db.claim_pending(str(ext_id))
     if row:
         await fulfill(bot, row[0], row[1])
     return bool(row)
@@ -220,7 +220,7 @@ async def cb_bonus(c: CallbackQuery):
 # ---------- оплата ----------
 @router.callback_query(F.data == "pay")
 async def cb_pay(c: CallbackQuery):
-    rows = [(f"{p['title']} — {p['stars']}⭐ / {p['usdt']} USDT", f"plan:{k}") for k, p in config.PLANS.items()]
+    rows = [(f"{p['title']} — {p['price']} ₽", f"plan:{k}") for k, p in config.PLANS.items()]
     await show(c, "<b>Оплата</b>\n\nБезлимитный трафик. Выберите срок:", kb(rows + [HOME]))
 
 
@@ -228,60 +228,56 @@ async def cb_pay(c: CallbackQuery):
 async def cb_plan(c: CallbackQuery):
     key = c.data.split(":")[1]
     p = config.PLANS[key]
-    rows = [("⭐ Telegram Stars", f"paystars:{key}")]
+    rows = []
+    if config.YOOKASSA_SHOP_ID and config.YOOKASSA_SECRET_KEY:
+        rows.append(("💳 Карта / СБП", f"payyoo:{key}"))
     if config.CRYPTO_PAY_TOKEN:
         rows.append(("🪙 Crypto Bot", f"paycrypto:{key}"))
-    # Сюда позже добавим СБП и банковскую карту РФ
-    await show(c, f"Тариф: <b>{p['title']}</b>\nВыберите способ оплаты:", kb(rows + [("⬅️ Назад", "pay")]))
+    if not rows:
+        return await show(c, "Оплата временно недоступна. Напишите в поддержку.",
+                          kb([("🛟 Поддержка", config.SUPPORT_URL), HOME]))
+    await show(c, f"Тариф: <b>{p['title']}</b> — {p['price']} ₽\nВыберите способ оплаты:",
+               kb(rows + [("⬅️ Назад", "pay")]))
 
 
-@router.callback_query(F.data.startswith("paystars:"))
-async def cb_stars(c: CallbackQuery):
+@router.callback_query(F.data.startswith("payyoo:"))
+async def cb_yoo(c: CallbackQuery):
     key = c.data.split(":")[1]
     p = config.PLANS[key]
-    await c.message.answer_invoice(
-        title=f"YamaVPN — {p['title']}",
-        description="Доступ к VPN, безлимитный трафик",
-        payload=f"plan:{key}",
-        provider_token="",
-        currency="XTR",
-        prices=[LabeledPrice(label=p["title"], amount=p["stars"])],
+    pay = await payments.yookassa_create(
+        p["price"], f"YamaVPN — {p['title']}", {"tg_id": str(c.from_user.id), "plan": key})
+    await db.add_payment(c.from_user.id, key, "yookassa", pay["id"], "pending")
+    url = pay["confirmation"]["confirmation_url"]
+    await show(
+        c,
+        f"Счёт на <b>{p['price']} ₽</b> создан. После оплаты подписка активируется автоматически (до минуты).",
+        kb([("💳 Оплатить", url), ("✅ Я оплатил", f"check:{pay['id']}"), HOME]),
     )
-    await c.answer()
-
-
-@router.pre_checkout_query()
-async def pre_checkout(q: PreCheckoutQuery):
-    await q.answer(ok=True)
-
-
-@router.message(F.successful_payment)
-async def on_paid(m: Message):
-    sp = m.successful_payment
-    key = sp.invoice_payload.split(":")[1]
-    if await db.add_payment(m.from_user.id, key, "stars", sp.telegram_payment_charge_id, "paid"):
-        await fulfill(m.bot, m.from_user.id, key)
 
 
 @router.callback_query(F.data.startswith("paycrypto:"))
 async def cb_crypto(c: CallbackQuery):
     key = c.data.split(":")[1]
     p = config.PLANS[key]
-    inv = await payments.create_invoice(p["usdt"], f"YamaVPN — {p['title']}", f"{c.from_user.id}:{key}")
+    inv = await payments.crypto_create(p["price"], f"YamaVPN — {p['title']}", f"{c.from_user.id}:{key}")
     await db.add_payment(c.from_user.id, key, "crypto", str(inv["invoice_id"]), "pending")
     url = inv.get("bot_invoice_url") or inv.get("pay_url")
     await show(
         c,
-        f"Счёт на <b>{p['usdt']} USDT</b> создан. После оплаты подписка активируется автоматически (до минуты).",
+        f"Счёт на <b>{p['price']} ₽</b> (в криптовалюте по курсу) создан. "
+        "После оплаты подписка активируется автоматически (до минуты).",
         kb([("🪙 Оплатить в Crypto Bot", url), ("✅ Я оплатил", f"check:{inv['invoice_id']}"), HOME]),
     )
 
 
 @router.callback_query(F.data.startswith("check:"))
 async def cb_check(c: CallbackQuery):
-    inv_id = c.data.split(":")[1]
-    if await payments.is_paid(inv_id):
-        await settle_crypto(c.bot, inv_id)
+    ext_id = c.data.split(":")[1]
+    row = await db.get_payment(ext_id)
+    if not row or row[0] != c.from_user.id:
+        return await c.answer("Платёж не найден.", show_alert=True)
+    if await payments.is_paid(row[1], ext_id):
+        await settle(c.bot, ext_id)
         await c.answer("Оплата получена!", show_alert=True)
     else:
         await c.answer("Оплата пока не найдена. Подождите минуту.", show_alert=True)
@@ -298,14 +294,19 @@ async def on_error(e: ErrorEvent):
 
 
 # ---------- фон ----------
-async def poll_crypto(bot: Bot):
+async def poll_payments(bot: Bot):
     while True:
         try:
-            for ext_id in await db.pending_crypto():
-                if await payments.is_paid(ext_id):
-                    await settle_crypto(bot, ext_id)
+            items = await db.pending()
         except Exception:
-            log.exception("crypto poll failed")
+            log.exception("db pending failed")
+            items = []
+        for ext_id, provider in items:
+            try:
+                if await payments.is_paid(provider, ext_id):
+                    await settle(bot, ext_id)
+            except Exception:
+                log.exception("payment check failed: %s", ext_id)
         await asyncio.sleep(20)
 
 
@@ -315,8 +316,7 @@ async def main():
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
-    if config.CRYPTO_PAY_TOKEN:
-        task = asyncio.create_task(poll_crypto(bot))  # noqa: F841
+    task = asyncio.create_task(poll_payments(bot))  # noqa: F841
     await dp.start_polling(bot)
 
 

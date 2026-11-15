@@ -54,18 +54,23 @@ async def add_payment(tg_id, plan, provider, ext_id, status):
     return n == 1
 
 
-async def pending_crypto():
+async def pending():
     rows = await _all(
-        "SELECT ext_id FROM payments WHERE provider='crypto' AND status='pending' AND created>?",
-        (int(time.time()) - 7200,))
-    return [r[0] for r in rows]
+        "SELECT ext_id, provider FROM payments WHERE status='pending' AND created>?",
+        (int(time.time()) - 86400,))
+    return [(r[0], r[1]) for r in rows]
+
+
+async def get_payment(ext_id):
+    """Вернёт (tg_id, provider) или None."""
+    return await _one("SELECT tg_id, provider FROM payments WHERE ext_id=?", (ext_id,))
 
 
 async def claim_pending(ext_id):
     """Атомарно помечает платёж оплаченным. Вернёт (tg_id, plan) только один раз."""
     async with aiosqlite.connect(config.DB_PATH) as d:
         cur = await d.execute(
-            "UPDATE payments SET status='paid' WHERE ext_id=? AND provider='crypto' AND status='pending'",
+            "UPDATE payments SET status='paid' WHERE ext_id=? AND status='pending'",
             (ext_id,))
         await d.commit()
         if cur.rowcount != 1:

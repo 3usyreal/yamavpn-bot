@@ -24,10 +24,13 @@ CHAT_URL = env("CHAT_URL")
 REF_BONUS_DAYS = int(env("REF_BONUS_DAYS", "7"))
 DB_PATH = env("DB_PATH", "/data/bot.db")
 
-# Тарифы. ЦЕНЫ ЗДЕСЬ ПРИМЕРНЫЕ: поставьте свои.
-# stars: цена в Telegram Stars, usdt: цена в USDT (строкой)
+YOOKASSA_SHOP_ID = env("YOOKASSA_SHOP_ID")
+YOOKASSA_SECRET_KEY = env("YOOKASSA_SECRET_KEY")
+YOOKASSA_RETURN_URL = env("YOOKASSA_RETURN_URL", "https://t.me/YamaVPNGateBot")
+
+# Тарифы. Цены в рублях (целые числа). Поменяйте под себя.
 PLANS = {
-    "m1": {"title": "1 месяц", "days": 30, "stars": 150, "usdt": "1.5"},
-    "m3": {"title": "3 месяца", "days": 90, "stars": 400, "usdt": "4"},
-    "m12": {"title": "12 месяцев", "days": 365, "stars": 1400, "usdt": "14"},
+    "m1": {"title": "1 месяц", "days": 30, "price": 199},
+    "m3": {"title": "3 месяца", "days": 90, "price": 549},
+    "m12": {"title": "12 месяцев", "days": 365, "price": 1990},
 }
