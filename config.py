@@ -22,6 +22,10 @@ SUPPORT_URL = env("SUPPORT_URL")
 CHANNEL_URL = env("CHANNEL_URL")
 CHAT_URL = env("CHAT_URL")
 REF_BONUS_DAYS = int(env("REF_BONUS_DAYS", "7"))
+TRIAL_DAYS = int(env("TRIAL_DAYS", "3"))
+# Обязательная подписка на канал: @username или числовой id (-100...). Пусто = выключено
+CHANNEL_ID = env("CHANNEL_ID")
+VLESS_FLOW = env("VLESS_FLOW", "xtls-rprx-vision")
 DB_PATH = env("DB_PATH", "/data/bot.db")
 
 YOOKASSA_SHOP_ID = env("YOOKASSA_SHOP_ID")

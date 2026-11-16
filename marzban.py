@@ -38,14 +38,16 @@ class Marzban:
     async def create_user(self, name, expire):
         body = {
             "username": name,
-            "proxies": {"vless": {"flow": "xtls-rprx-vision"}},
+            "proxies": {"vless": {"flow": config.VLESS_FLOW}},
             "expire": expire,
             "data_limit": 0,
             "status": "active",
         }
         if config.INBOUND_TAG:
             body["inbounds"] = {"vless": [config.INBOUND_TAG]}
-        return await self._req("POST", "/api/user", json=body)
+        u = await self._req("POST", "/api/user", json=body)
+        await self.ensure_flow(u)  # на случай, если панель не применила flow
+        return u
 
     async def set_expire(self, name, expire):
         return await self._req("PUT", f"/api/user/{name}", json={"expire": expire, "status": "active"})
@@ -53,3 +55,22 @@ class Marzban:
     async def hosts(self):
         data = await self._req("GET", "/api/hosts") or {}
         return [h for group in data.values() for h in group]
+
+    async def ensure_flow(self, u):
+        """Выставляет flow, если его нет. UUID пользователя сохраняется. Вернёт True, если правили."""
+        vless = (u.get("proxies") or {}).get("vless")
+        if vless is None or vless.get("flow") == config.VLESS_FLOW:
+            return False
+        await self._req("PUT", f"/api/user/{u['username']}",
+                        json={"proxies": {"vless": {**vless, "flow": config.VLESS_FLOW}}})
+        return True
+
+    async def list_users(self):
+        users, offset = [], 0
+        while True:
+            data = await self._req("GET", f"/api/users?offset={offset}&limit=100") or {}
+            batch = data.get("users", [])
+            users += batch
+            if len(batch) < 100:
+                return users
+            offset += 100

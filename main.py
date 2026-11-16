@@ -4,12 +4,12 @@ import logging
 import re
 import time
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, ErrorEvent, Message
+from aiogram.types import CallbackQuery, CopyTextButton, ErrorEvent, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import config
@@ -22,14 +22,23 @@ router = Router()
 mz = Marzban()
 
 HELP_TEXT = (
-    "<b>Как подключиться</b>\n\n"
-    "1. Установите приложение:\n"
-    "• iPhone: Streisand или Happ\n"
-    "• Android: v2rayNG или Hiddify\n"
-    "• Windows / macOS: Hiddify\n\n"
-    "2. В боте откройте «Мои подписки» и скопируйте ссылку подписки.\n"
-    "3. В приложении добавьте подписку по URL (из буфера обмена) и включите VPN.\n\n"
-    "Если что-то не работает, напишите в поддержку."
+    "<b>💡 Как подключиться</b>\n\n"
+    "<b>1️⃣ Установите приложение</b>\n"
+    "⭐ Основное: <b>Karing</b>\n"
+    "🔹 Запасное: <b>Incy</b>\n"
+    "Оба бесплатные, есть для iPhone, Android, Windows и macOS. "
+    "Найдите их по названию в App Store или Google Play. Если в вашем магазине приложения нет, "
+    "скачайте его с сайта разработчика.\n\n"
+    "<b>2️⃣ Скопируйте ссылку подписки</b>\n"
+    "«Мои подписки» → «Подписка 1» → «Скопировать ссылку».\n\n"
+    "<b>3️⃣ Добавьте её в приложение</b>\n"
+    "Нажмите «+» (добавить профиль) и выберите импорт подписки по ссылке или из буфера обмена. "
+    "При первом запуске на iPhone разрешите добавление VPN-конфигурации.\n\n"
+    "<b>4️⃣ Включите соединение</b> и проверьте, что интернет работает.\n\n"
+    "<b>Не подключается?</b>\n"
+    "• Обновите подписку в приложении (кнопка обновления рядом с ней)\n"
+    "• Попробуйте второе приложение (Incy, если был Karing, и наоборот)\n"
+    "• Напишите в поддержку, мы поможем"
 )
 
 
@@ -42,12 +51,26 @@ def fmt_date(ts) -> str:
     return time.strftime("%d.%m.%Y %H:%M", time.localtime(ts)) if ts else "бессрочно"
 
 
+def days_left(ts) -> str:
+    if not ts:
+        return "без ограничения срока"
+    left = ts - time.time()
+    if left <= 0:
+        return "срок истёк"
+    d = int(left // 86400)
+    if d >= 1:
+        return f"{d} дн."
+    return f"{max(1, int(left // 3600))} ч."
+
+
 def kb(rows):
     b = InlineKeyboardBuilder()
     for text, target in rows:
         if not target:
             continue
-        if target.startswith("http"):
+        if target.startswith("copy:"):
+            b.button(text=text, copy_text=CopyTextButton(text=target[5:]))
+        elif target.startswith("http"):
             b.button(text=text, url=target)
         else:
             b.button(text=text, callback_data=target)
@@ -58,8 +81,14 @@ def kb(rows):
 HOME = ("🏠 Главное меню", "menu")
 
 
-def main_menu():
-    return kb([
+def copy_row(url: str):
+    """Кнопка «скопировать» (лимит Telegram на текст кнопки: 256 символов)."""
+    return [("📋 Скопировать ссылку", "copy:" + url)] if len(url) <= 256 else []
+
+
+def main_menu(trial: bool = False):
+    trial_row = [(f"🎁 Попробовать бесплатно ({config.TRIAL_DAYS} дн.)", "trial")] if trial else []
+    return kb(trial_row + [
         ("📁 Мои подписки", "subs"),
         ("💳 Оплата", "pay"),
         ("⚡ Бонусы", "bonus"),
@@ -82,11 +111,41 @@ async def show(c: CallbackQuery, text: str, markup=None):
 async def menu_text(tg_id: int) -> str:
     u = await mz.get_user(uname(tg_id))
     if not u:
-        line = "Подписки пока нет."
-    else:
-        icon = "✅" if u["status"] == "active" else "⛔️"
-        line = f"{icon} Подписка 1 — до {fmt_date(u.get('expire'))}"
-    return f"<b>Привет!</b>\nВаш ID: <code>{tg_id}</code>\n\n{line}"
+        price = config.PLANS["m1"]["price"]
+        return (
+            "👋 <b>Привет! Это YamaVPN</b>\n"
+            "<i>Просто и надёжно</i>\n\n"
+            f"🆔 Ваш ID: <code>{tg_id}</code>\n"
+            "📭 Подписки пока нет\n\n"
+            "<b>🚀 Как начать</b>\n"
+            "1️⃣ Откройте «Оплата» и выберите тариф\n"
+            "2️⃣ Получите ссылку подписки\n"
+            "3️⃣ Вставьте её в приложение (шаги в «Инструкциях»)\n\n"
+            f"💰 Тарифы от {price} ₽ в месяц · трафик без ограничений\n"
+            f"🎁 Новым пользователям: {config.TRIAL_DAYS} дн. бесплатно"
+        )
+    active = u["status"] == "active" and (not u.get("expire") or u["expire"] > time.time())
+    if active:
+        return (
+            "👋 <b>YamaVPN</b>\n"
+            "<i>Просто и надёжно</i>\n\n"
+            f"🆔 Ваш ID: <code>{tg_id}</code>\n"
+            "✅ Подписка активна\n"
+            f"📅 До: {fmt_date(u.get('expire'))}\n"
+            f"⏳ Осталось: {days_left(u.get('expire'))}"
+        )
+    return (
+        "👋 <b>YamaVPN</b>\n"
+        "<i>Просто и надёжно</i>\n\n"
+        f"🆔 Ваш ID: <code>{tg_id}</code>\n"
+        "⛔️ Подписка закончилась\n"
+        f"📅 Была до: {fmt_date(u.get('expire'))}\n\n"
+        "Продлите её в разделе «Оплата», и ссылка заработает снова."
+    )
+
+
+async def trial_ok(tg_id: int) -> bool:
+    return await db.trial_available(tg_id) and await mz.get_user(uname(tg_id)) is None
 
 
 # ---------- выдача подписки ----------
@@ -95,6 +154,7 @@ async def grant(tg_id: int, days: int):
     u = await mz.get_user(name)
     if u:
         base = max(now, u.get("expire") or 0)
+        await mz.ensure_flow(u)
         await mz.set_expire(name, base + days * 86400)
     else:
         await mz.create_user(name, now + days * 86400)
@@ -103,11 +163,14 @@ async def grant(tg_id: int, days: int):
 async def fulfill(bot: Bot, tg_id: int, plan: str):
     await grant(tg_id, config.PLANS[plan]["days"])
     u = await mz.get_user(uname(tg_id))
+    url = u["subscription_url"]
     await bot.send_message(
         tg_id,
-        f"✅ Оплата получена!\nПодписка активна до {fmt_date(u.get('expire'))}\n\n"
-        f"Ссылка подписки:\n<code>{u['subscription_url']}</code>",
-        reply_markup=kb([("📁 Мои подписки", "subs"), ("💡 Инструкции", "help")]),
+        f"✅ <b>Оплата получена!</b>\nПодписка активна до {fmt_date(u.get('expire'))}\n\n"
+        f"<b>Ваша ссылка подписки</b> (нажмите на неё или на кнопку ниже, чтобы скопировать):\n"
+        f"<code>{url}</code>\n\n"
+        "Вставьте её в приложение: подробнее в «Инструкциях».",
+        reply_markup=kb(copy_row(url) + [("💡 Инструкции", "help"), ("📁 Мои подписки", "subs")]),
     )
     ref = await db.first_paid(tg_id)
     if ref:
@@ -125,6 +188,54 @@ async def settle(bot: Bot, ext_id):
     return bool(row)
 
 
+# ---------- обязательная подписка на канал ----------
+async def is_subscribed(bot: Bot, user_id: int) -> bool:
+    try:
+        mem = await bot.get_chat_member(config.CHANNEL_ID, user_id)
+    except Exception:
+        log.exception("get_chat_member failed: бот не админ канала или неверный CHANNEL_ID?")
+        return True  # не блокируем всех из-за сбоя
+    return mem.status in ("member", "administrator", "creator") or (
+        mem.status == "restricted" and mem.is_member)
+
+
+class SubGate(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = event.from_user
+        if not config.CHANNEL_ID or user.id in config.ADMIN_IDS:
+            return await handler(event, data)
+        if isinstance(event, CallbackQuery) and event.data == "chk_sub":
+            return await handler(event, data)
+        if await is_subscribed(event.bot, user.id):
+            return await handler(event, data)
+        # не теряем реферальную ссылку, пока человек подписывается
+        if isinstance(event, Message) and event.text and event.text.startswith("/start ref_"):
+            arg = event.text.split("ref_", 1)[1].strip()
+            if arg.isdigit():
+                await db.add_user(user.id, int(arg))
+        text = "Чтобы пользоваться ботом, подпишитесь на наш канал, а затем нажмите «Проверить подписку»."
+        markup = kb([("📣 Подписаться", config.CHANNEL_URL), ("✅ Проверить подписку", "chk_sub")])
+        if isinstance(event, CallbackQuery):
+            await event.message.answer(text, reply_markup=markup)
+            await event.answer()
+        else:
+            await event.answer(text, reply_markup=markup)
+
+
+router.message.outer_middleware(SubGate())
+router.callback_query.outer_middleware(SubGate())
+
+
+@router.callback_query(F.data == "chk_sub")
+async def cb_chk_sub(c: CallbackQuery):
+    if not await is_subscribed(c.bot, c.from_user.id):
+        return await c.answer("Подписка не найдена. Подпишитесь на канал и повторите.", show_alert=True)
+    await db.add_user(c.from_user.id, None)
+    await c.message.answer(await menu_text(c.from_user.id),
+                           reply_markup=main_menu(await trial_ok(c.from_user.id)))
+    await c.answer()
+
+
 # ---------- команды ----------
 @router.message(CommandStart())
 async def start(m: Message, command: CommandObject):
@@ -132,7 +243,7 @@ async def start(m: Message, command: CommandObject):
     if command.args and command.args.startswith("ref_") and command.args[4:].isdigit():
         ref = int(command.args[4:])
     await db.add_user(m.from_user.id, ref)
-    await m.answer(await menu_text(m.from_user.id), reply_markup=main_menu())
+    await m.answer(await menu_text(m.from_user.id), reply_markup=main_menu(await trial_ok(m.from_user.id)))
 
 
 @router.message(Command("grant"))
@@ -147,6 +258,18 @@ async def cmd_grant(m: Message, command: CommandObject):
     await m.answer("Готово.")
 
 
+@router.message(Command("fixflow"))
+async def cmd_fixflow(m: Message):
+    """Админ: выставить flow всем существующим пользователям (UUID не меняется)."""
+    if m.from_user.id not in config.ADMIN_IDS:
+        return
+    n = 0
+    for u in await mz.list_users():
+        if await mz.ensure_flow(u):
+            n += 1
+    await m.answer(f"Исправлено пользователей: {n}")
+
+
 @router.message(Command("stats"))
 async def cmd_stats(m: Message):
     if m.from_user.id not in config.ADMIN_IDS:
@@ -158,7 +281,26 @@ async def cmd_stats(m: Message):
 # ---------- меню ----------
 @router.callback_query(F.data == "menu")
 async def cb_menu(c: CallbackQuery):
-    await show(c, await menu_text(c.from_user.id), main_menu())
+    await show(c, await menu_text(c.from_user.id), main_menu(await trial_ok(c.from_user.id)))
+
+
+@router.callback_query(F.data == "trial")
+async def cb_trial(c: CallbackQuery):
+    tg_id = c.from_user.id
+    if await mz.get_user(uname(tg_id)) is not None or not await db.claim_trial(tg_id):
+        return await c.answer("Пробный период доступен один раз и уже использован.", show_alert=True)
+    try:
+        await grant(tg_id, config.TRIAL_DAYS)
+        u = await mz.get_user(uname(tg_id))
+    except Exception:
+        await db.release_trial(tg_id)  # не сжигаем пробный период при сбое
+        raise
+    await show(
+        c,
+        f"🎁 Пробный период на {config.TRIAL_DAYS} дн. активирован!\nДо {fmt_date(u.get('expire'))}\n\n"
+        f"Ссылка подписки (нажмите, чтобы скопировать):\n<code>{u['subscription_url']}</code>",
+        kb(copy_row(u["subscription_url"]) + [("💡 Инструкции", "help"), ("💳 Оплата", "pay"), HOME]),
+    )
 
 
 @router.callback_query(F.data == "subs")
@@ -183,7 +325,7 @@ async def cb_sub1(c: CallbackQuery):
         f"Трафик: {used:.1f} ГБ / ∞\n\nСсылка подписки (нажмите, чтобы скопировать):\n"
         f"<code>{u['subscription_url']}</code>"
     )
-    await show(c, text, kb([("🔄 Продлить", "pay"), ("💡 Инструкции", "help"), HOME]))
+    await show(c, text, kb(copy_row(u["subscription_url"]) + [("🔄 Продлить", "pay"), ("💡 Инструкции", "help"), HOME]))
 
 
 @router.callback_query(F.data == "help")

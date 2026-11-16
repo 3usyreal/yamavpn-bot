@@ -7,7 +7,7 @@ import config
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
-    tg_id INTEGER PRIMARY KEY, ref_by INTEGER, created INTEGER, paid INTEGER DEFAULT 0);
+    tg_id INTEGER PRIMARY KEY, ref_by INTEGER, created INTEGER, paid INTEGER DEFAULT 0, trial INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS payments(
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER, plan TEXT, provider TEXT,
     ext_id TEXT UNIQUE, status TEXT, created INTEGER);
@@ -18,6 +18,10 @@ async def init():
     os.makedirs(os.path.dirname(config.DB_PATH) or ".", exist_ok=True)
     async with aiosqlite.connect(config.DB_PATH) as d:
         await d.executescript(SCHEMA)
+        cur = await d.execute("PRAGMA table_info(users)")
+        cols = [r[1] for r in await cur.fetchall()]
+        if "trial" not in cols:  # миграция для уже созданной базы
+            await d.execute("ALTER TABLE users ADD COLUMN trial INTEGER DEFAULT 0")
         await d.commit()
 
 
@@ -96,3 +100,17 @@ async def stats():
     users = (await _one("SELECT COUNT(*) FROM users"))[0]
     paid = (await _one("SELECT COUNT(*) FROM users WHERE paid=1"))[0]
     return users, paid
+
+
+async def trial_available(tg_id):
+    row = await _one("SELECT trial, paid FROM users WHERE tg_id=?", (tg_id,))
+    return bool(row) and row[0] == 0 and row[1] == 0
+
+
+async def claim_trial(tg_id):
+    """Атомарно отмечает пробный период использованным (один раз на пользователя)."""
+    return await _exec("UPDATE users SET trial=1 WHERE tg_id=? AND trial=0 AND paid=0", (tg_id,)) == 1
+
+
+async def release_trial(tg_id):
+    await _exec("UPDATE users SET trial=0 WHERE tg_id=?", (tg_id,))
