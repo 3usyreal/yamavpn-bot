@@ -154,7 +154,7 @@ async def grant(tg_id: int, days: int):
     u = await mz.get_user(name)
     if u:
         base = max(now, u.get("expire") or 0)
-        await mz.ensure_flow(u)
+        await mz.ensure_user(u)
         await mz.set_expire(name, base + days * 86400)
     else:
         await mz.create_user(name, now + days * 86400)
@@ -260,12 +260,12 @@ async def cmd_grant(m: Message, command: CommandObject):
 
 @router.message(Command("fixflow"))
 async def cmd_fixflow(m: Message):
-    """Админ: выставить flow всем существующим пользователям (UUID не меняется)."""
+    """Админ: выставить flow и отметить VLESS inbound у всех существующих пользователей (UUID не меняется)."""
     if m.from_user.id not in config.ADMIN_IDS:
         return
     n = 0
     for u in await mz.list_users():
-        if await mz.ensure_flow(u):
+        if await mz.ensure_user(u):
             n += 1
     await m.answer(f"Исправлено пользователей: {n}")
 

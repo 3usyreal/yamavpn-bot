@@ -35,7 +35,13 @@ class Marzban:
     async def get_user(self, name):
         return await self._req("GET", f"/api/user/{name}")
 
+    async def vless_tags(self):
+        """Теги всех VLESS-inbound из панели."""
+        data = await self._req("GET", "/api/inbounds") or {}
+        return [i["tag"] for i in data.get("vless", [])]
+
     async def create_user(self, name, expire):
+        tags = [config.INBOUND_TAG] if config.INBOUND_TAG else await self.vless_tags()
         body = {
             "username": name,
             "proxies": {"vless": {"flow": config.VLESS_FLOW}},
@@ -43,10 +49,10 @@ class Marzban:
             "data_limit": 0,
             "status": "active",
         }
-        if config.INBOUND_TAG:
-            body["inbounds"] = {"vless": [config.INBOUND_TAG]}
+        if tags:
+            body["inbounds"] = {"vless": tags}  # явно отмечаем VLESS Reality для пользователя
         u = await self._req("POST", "/api/user", json=body)
-        await self.ensure_flow(u)  # на случай, если панель не применила flow
+        await self.ensure_user(u)  # на случай, если панель не применила flow или inbound
         return u
 
     async def set_expire(self, name, expire):
@@ -64,6 +70,22 @@ class Marzban:
         await self._req("PUT", f"/api/user/{u['username']}",
                         json={"proxies": {"vless": {**vless, "flow": config.VLESS_FLOW}}})
         return True
+
+    async def ensure_inbound(self, u):
+        """Если у пользователя не отмечен ни один VLESS inbound, отмечает все. Вернёт True, если правили."""
+        if (u.get("inbounds") or {}).get("vless"):
+            return False
+        tags = [config.INBOUND_TAG] if config.INBOUND_TAG else await self.vless_tags()
+        if not tags:
+            return False
+        await self._req("PUT", f"/api/user/{u['username']}", json={"inbounds": {"vless": tags}})
+        return True
+
+    async def ensure_user(self, u):
+        """flow + inbound. Вернёт True, если что-то исправили."""
+        a = await self.ensure_flow(u)
+        b = await self.ensure_inbound(u)
+        return a or b
 
     async def list_users(self):
         users, offset = [], 0
